@@ -28,17 +28,18 @@ describe("compile --target=browser", () => {
     expect(html).toContain("<style>");
     expect(html).toContain("color: red");
     expect(html).toContain("</style>");
-    expect(html).toContain('<script type="module">');
+    expect(html).toContain("<script>");
     expect(html).toContain('console.log("hello")');
     expect(html).toContain("</script>");
+    expect(html).not.toContain('<script type="module">');
     // Should NOT have external references
     expect(html).not.toContain('src="');
     expect(html).not.toContain('href="');
   });
 
-  test("uses type=module on inline scripts", async () => {
+  test("keeps module scripts on the module path", async () => {
     using dir = tempDir("compile-browser-module", {
-      "index.html": `<!DOCTYPE html><html><body><script src="./app.js"></script></body></html>`,
+      "index.html": `<!DOCTYPE html><html><body><div id="before"></div><script type="module" src="./app.js"></script><div id="after"></div></body></html>`,
       "app.js": `console.log("module");`,
     });
 
@@ -50,15 +51,17 @@ describe("compile --target=browser", () => {
 
     expect(result.success).toBe(true);
     const html = await result.outputs[0].text();
+    const afterIndex = html.indexOf('id="after"');
+    const scriptIndex = html.indexOf('<script type="module">');
     expect(html).toContain('<script type="module">');
-    expect(html).not.toMatch(/<script>(?!<)/);
+    expect(html).not.toContain('<script src="');
+    expect(scriptIndex).toBeGreaterThan(afterIndex);
   });
 
-  test("top-level await works with inline scripts", async () => {
-    using dir = tempDir("compile-browser-tla", {
-      "index.html": `<!DOCTYPE html><html><body><script src="./app.js"></script></body></html>`,
-      "app.js": `const data = await Promise.resolve(42);
-console.log(data);`,
+  test("preserves classic script type attributes at the original location", async () => {
+    using dir = tempDir("compile-browser-classic-type", {
+      "index.html": `<!DOCTYPE html><html><body><div id="before"></div><script type="text/javascript" src="./app.js"></script><div id="after"></div></body></html>`,
+      "app.js": `console.log("classic type");`,
     });
 
     const result = await Bun.build({
@@ -69,8 +72,102 @@ console.log(data);`,
 
     expect(result.success).toBe(true);
     const html = await result.outputs[0].text();
-    expect(html).toContain('<script type="module">');
-    expect(html).toContain("await");
+    const beforeIndex = html.indexOf('id="before"');
+    const scriptIndex = html.indexOf('<script type="text/javascript">');
+    const afterIndex = html.indexOf('id="after"');
+
+    expect(beforeIndex).toBeLessThan(scriptIndex);
+    expect(scriptIndex).toBeLessThan(afterIndex);
+    expect(html).toContain('console.log("classic type")');
+    expect(html).not.toContain('<script type="module">');
+  });
+
+  test("replaces bundled scripts in place within the body", async () => {
+    using dir = tempDir("compile-browser-body-placement", {
+      "index.html": `<!DOCTYPE html>
+<html>
+  <body>
+    <div id="before"></div>
+    <script src="./app.js"></script>
+    <div id="after"></div>
+  </body>
+</html>`,
+      "app.js": `console.log("body placement");`,
+    });
+
+    const result = await Bun.build({
+      entrypoints: [`${dir}/index.html`],
+      compile: true,
+      target: "browser",
+    });
+
+    expect(result.success).toBe(true);
+    const html = await result.outputs[0].text();
+    const beforeIndex = html.indexOf('id="before"');
+    const scriptIndex = html.indexOf("<script>");
+    const afterIndex = html.indexOf('id="after"');
+
+    expect(beforeIndex).toBeLessThan(scriptIndex);
+    expect(scriptIndex).toBeLessThan(afterIndex);
+    expect(html).toContain('console.log("body placement")');
+  });
+
+  test("replaces every bundled script reference in place", async () => {
+    using dir = tempDir("compile-browser-multiple-scripts", {
+      "index.html": `<!DOCTYPE html>
+<html>
+  <body>
+    <script src="./first.js"></script>
+    <p>between</p>
+    <script src="./second.js"></script>
+  </body>
+</html>`,
+      "first.js": `console.log("first marker");`,
+      "second.js": `console.log("second marker");`,
+    });
+
+    const result = await Bun.build({
+      entrypoints: [`${dir}/index.html`],
+      compile: true,
+      target: "browser",
+    });
+
+    expect(result.success).toBe(true);
+    const html = await result.outputs[0].text();
+
+    expect(html.split("<script>").length - 1).toBe(2);
+    expect(html.split("first marker").length - 1).toBe(2);
+    expect(html.split("second marker").length - 1).toBe(2);
+    expect(html.indexOf("between")).toBeGreaterThan(html.indexOf("first marker"));
+    expect(html.indexOf("between")).toBeLessThan(html.lastIndexOf("second marker"));
+  });
+
+  test("replaces the same bundled script reference each time it appears", async () => {
+    using dir = tempDir("compile-browser-duplicate-script-reference", {
+      "index.html": `<!DOCTYPE html>
+<html>
+  <body>
+    <script src="./app.js"></script>
+    <p>between</p>
+    <script src="./app.js"></script>
+  </body>
+</html>`,
+      "app.js": `console.log("duplicate marker");`,
+    });
+
+    const result = await Bun.build({
+      entrypoints: [`${dir}/index.html`],
+      compile: true,
+      target: "browser",
+    });
+
+    expect(result.success).toBe(true);
+    const html = await result.outputs[0].text();
+
+    expect(html.split("<script>").length - 1).toBe(2);
+    expect(html.split("duplicate marker").length - 1).toBe(2);
+    expect(html.indexOf("between")).toBeGreaterThan(html.indexOf("duplicate marker"));
+    expect(html.indexOf("between")).toBeLessThan(html.lastIndexOf("duplicate marker"));
   });
 
   test("escapes </script> in inlined JS", async () => {
@@ -185,7 +282,7 @@ export const APP_VERSION = "1.0.0";`,
     expect(html).toContain("[LOG]");
     // Single output, no external refs
     expect(html).not.toContain('src="');
-    expect(html).toContain('<script type="module">');
+    expect(html).toContain("<script>");
   });
 
   test("CSS imported from JS and via link tag (deduplicated)", async () => {
@@ -288,7 +385,7 @@ body { color: blue; }`,
     const html = await Bun.file(`${outdir}/index.html`).text();
     expect(html).toContain("<style>");
     expect(html).toContain("font-weight: bold");
-    expect(html).toContain('<script type="module">');
+    expect(html).toContain("<script>");
     expect(html).toContain('console.log("outdir test")');
   });
 
@@ -454,7 +551,7 @@ body { color: blue; }`,
     const html = await Bun.file(`${outdir}/index.html`).text();
     expect(html).toContain("<style>");
     expect(html).toContain("font-weight: bold");
-    expect(html).toContain('<script type="module">');
+    expect(html).toContain("<script>");
     expect(html).toContain('console.log("cli test")');
 
     expect(stderr).toBe("");
@@ -484,7 +581,7 @@ body { color: blue; }`,
     expect(html).toContain("<style>");
     expect(html).toContain("color: green");
     // JS should also be inlined (this was the bug - JS was dropped in fallback path)
-    expect(html).toContain('<script type="module">');
+    expect(html).toContain("<script>");
     expect(html).toContain('console.log("malformed html")');
   });
 
@@ -513,7 +610,7 @@ console.log(message);`,
     const html = await result.outputs[0].text();
     expect(html).toContain("<style>");
     expect(html).toContain("</style>");
-    expect(html).toContain('<script type="module">');
+    expect(html).toContain("<script>");
     expect(html).toContain("</script>");
   });
 });

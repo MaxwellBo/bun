@@ -7,9 +7,11 @@
 ///    attribute to point to the asset's unique key. Later, when joining
 ///    chunks, we will rewrite these to their final URL or pathname,
 ///    including the public_path.
-/// 3. If a JavaScript chunk exists, add a <script type="module" crossorigin> tag that contains
-///    the JavaScript for the entry point which uses the "src" attribute
-///    to point to the JavaScript chunk's unique key.
+/// 3. If a JavaScript chunk exists, either replace the original bundled
+///    classic <script src> with inline contents at the original location in
+///    standalone mode or add a <script type="module" crossorigin> tag that
+///    contains the JavaScript for the entry point which uses the "src"
+///    attribute to point to the JavaScript chunk's unique key.
 /// 4. If a CSS chunk exists, add a <link rel="stylesheet" href="..." crossorigin> tag that contains
 ///    the CSS for the entry point which uses the "href" attribute to point to the
 ///    CSS chunk's unique key.
@@ -101,7 +103,18 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
                 return;
             }
 
-            if (loader.isJavaScriptLike() or loader.isCSS()) {
+            if (loader.isJavaScriptLike()) {
+                if (this.compile_to_standalone_html and isScriptTag(element) and !isModuleScript(element)) {
+                    this.inlineClassicStandaloneScriptAtOriginalPosition(element);
+                    return;
+                }
+
+                // Remove the original non-external tags
+                element.remove();
+                return;
+            }
+
+            if (loader.isCSS()) {
                 // Remove the original non-external tags
                 element.remove();
                 return;
@@ -124,6 +137,33 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
                     std.debug.panic("unexpected error from Element.setAttribute", .{});
                 };
                 return;
+            }
+        }
+
+        fn isScriptTag(element: *lol.Element) bool {
+            const tag_name = element.tagName();
+            defer tag_name.deinit();
+            return strings.eqlCaseInsensitiveASCII(tag_name.slice(), "script", true);
+        }
+
+        fn isModuleScript(element: *lol.Element) bool {
+            if (!(element.hasAttribute("type") catch false)) return false;
+            const type_value = element.getAttribute("type");
+            defer type_value.deinit();
+            return strings.eqlCaseInsensitiveASCII(strings.trimSpaces(type_value.slice()), "module", true);
+        }
+
+        fn inlineClassicStandaloneScriptAtOriginalPosition(this: *@This(), element: *lol.Element) void {
+            if (this.chunk.getJSChunkForHTML(this.chunks)) |js_chunk| {
+                element.removeAttribute("src") catch {
+                    std.debug.panic("unexpected error from Element.removeAttribute", .{});
+                };
+                element.setInnerContent(js_chunk.unique_key, false) catch {
+                    std.debug.panic("unexpected error from Element.setInnerContent", .{});
+                };
+                this.added_body_script = true;
+            } else {
+                element.remove();
             }
         }
 
@@ -156,7 +196,9 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
                 try endTag.before(slice, true);
         }
 
-        /// Insert inline script before </body> so DOM elements are available.
+        /// Fallback insertion point when standalone HTML still needs a bundled
+        /// script after the rewrite, such as for original module scripts or
+        /// when no replaceable classic <script src> location survived.
         fn addBodyTags(this: *@This(), endTag: *lol.EndTag) !void {
             if (this.added_body_script) return;
             this.added_body_script = true;
@@ -206,10 +248,7 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
         fn endBodyTagHandler(end: *lol.EndTag, opaque_this: ?*anyopaque) callconv(.c) lol.Directive {
             const this: *@This() = @ptrCast(@alignCast(opaque_this.?));
             if (this.linker.dev_server == null) {
-                if (this.compile_to_standalone_html) {
-                    // In standalone mode, insert JS before </body> so DOM is available
-                    this.addBodyTags(end) catch return .stop;
-                } else {
+                if (!this.compile_to_standalone_html) {
                     this.addHeadTags(end) catch return .stop;
                 }
             } else {
@@ -222,7 +261,7 @@ fn generateCompileResultForHTMLChunkImpl(worker: *ThreadPool.Worker, c: *LinkerC
             const this: *@This() = @ptrCast(@alignCast(opaque_this.?));
             if (this.linker.dev_server == null) {
                 if (this.compile_to_standalone_html) {
-                    // Fallback: if no </body> was found, insert both CSS and JS before </html>
+                    // Fallback: if no replaceable script tag was found, inject JS before </html>.
                     this.addHeadTags(end) catch return .stop;
                     this.addBodyTags(end) catch return .stop;
                 } else {
