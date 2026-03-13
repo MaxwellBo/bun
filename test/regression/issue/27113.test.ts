@@ -74,8 +74,8 @@ test("standalone HTML still bundles <script type=\"module\">s into a <script typ
 
   const html = await result.outputs[0].text();
   const headCloseIndex = html.indexOf("</head>");
-  const bundledScriptIndex = html.indexOf("hello from module script");
-  const bodyInlineScriptIndex = html.indexOf(`document.getElementById("out").textContent = "body inline";`);
+  const bundledScriptIndex = html.indexOf("Hello from setup.js");
+  const bodyInlineScriptIndex = html.indexOf(`document.getElementById("out").textContent`);
 
   expect(bundledScriptIndex).toBeGreaterThan(headCloseIndex);
   expect(bundledScriptIndex).toBeGreaterThan(bodyInlineScriptIndex);
